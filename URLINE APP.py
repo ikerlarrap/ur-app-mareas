@@ -164,7 +164,7 @@ def consultar_marea_ihm(id_puerto, fecha_obj):
     except Exception as e: 
         return {"error": f"Error de red: {str(e)}"}
 
-# --- BARRA DE PROGRESO ---
+# --- BARRA DE PROGRESO DE MAREAS ---
 def mostrar_progreso_marea(m_datos):
     now_naive = now_local.replace(tzinfo=None)
     events = []
@@ -186,7 +186,7 @@ def mostrar_progreso_marea(m_datos):
             return
     st.caption("Eguneko marea guztiak pasatu dira.")
 
-# --- SIDEBAR ---
+# --- SIDEBAR & DAYLIGHT TRACKER ---
 BASES = {
     "Ur Urdaibai": {"tipo": "mar", "lat": 43.396, "lon": -2.684, "id_ihm": "72"},
     "Ur Lekeitio": {"tipo": "mar", "lat": 43.364, "lon": -2.503, "id_ihm": "72"},
@@ -204,10 +204,38 @@ with st.sidebar:
     st.divider()
     st.subheader("☀️ Argia / Luz")
     if clima and "error" not in clima:
-        st.write(f"🌅 **Egunsentia:** {clima['amanecer']}")
-        st.write(f"🌇 **Iluntzea:** {clima['atardecer']}")
+        amanecer = clima['amanecer']
+        atardecer = clima['atardecer']
+        
+        c1, c2 = st.columns(2)
+        c1.write(f"🌅 **Egunsentia:**\n{amanecer}")
+        c2.write(f"🌇 **Iluntzea:**\n{atardecer}")
+        
+        # --- CÁLCULO DE PROGRESO SOLAR ---
+        hoy = datetime.date.today()
+        t_amanecer = tz_madrid.localize(datetime.datetime.strptime(f"{hoy} {amanecer}", "%Y-%m-%d %H:%M"))
+        t_atardecer = tz_madrid.localize(datetime.datetime.strptime(f"{hoy} {atardecer}", "%Y-%m-%d %H:%M"))
+        
+        if now_local < t_amanecer:
+            st.info("🌙 Eguna ez da hasi / Noche")
+            st.progress(0)
+        elif now_local > t_atardecer:
+            st.info("🌙 Eguna amaitu da / Noche")
+            st.progress(100)
+        else:
+            total_luz = (t_atardecer - t_amanecer).total_seconds()
+            transcurrido = (now_local - t_amanecer).total_seconds()
+            progreso_solar = transcurrido / total_luz
+            
+            minutos_restantes = int((t_atardecer - now_local).total_seconds() / 60)
+            horas_restantes = minutos_restantes // 60
+            mins_rest = minutos_restantes % 60
+            
+            st.write(f"⏳ **Argi orduak / Luz restante:** {horas_restantes}h {mins_rest}m")
+            st.progress(progreso_solar)
     else:
         st.warning("Ezin izan da eguzki-ordua kargatu.")
+        
     st.divider()
     st.caption("UR line PRO © 2026")
 
@@ -311,4 +339,4 @@ if info['tipo'] == "mar":
                 st.error("Ezin izan dira datuak lortu.")
 
 st.divider()
-st.caption("UR Abentura PRO © 2026 - Eskerrik asko zure lanagatik! ⚓")
+st.caption("URLINE © 2026 ")
