@@ -3,68 +3,80 @@ import requests
 import datetime
 import urllib3
 
-# --- CONFIGURACIÓN ---
+# --- CONFIGURACIÓN DE SEGURIDAD ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-st.set_page_config(page_title="UR Abentura - Bermeo API", layout="wide")
+st.set_page_config(page_title="UR Abentura - IHM Oficial", layout="wide")
 
-# Ambas bases apuntan a Bermeo (72)
-BASES = {"Ur Urdaibai": "72", "Ur Lekeitio": "72"}
+# ID 72 es Bermeo (el que hemos comprobado que funciona)
+ID_BERMEO = "72"
 
 @st.cache_data(ttl=3600)
-def llamar_api_ihm(id_puerto, fecha_obj):
-    fecha_str = fecha_obj.strftime("%Y-%m-%d")
-    # LA LLAMADA (Exactamente la URL que funciona)
-    url = f"https://ideihm.covam.es/api-ihm/getmarea?request=gettide&id={id_puerto}&format=json&fecha={fecha_str}"
+def obtener_mareas_ihm(id_puerto, fecha_obj):
+    # Ajuste según documentación: formato YYYYMMDD
+    fecha_api = fecha_obj.strftime("%Y%m%d")
+    
+    # Construcción exacta de la URL según tu texto:
+    # http://ideihm.covam.es/api-ihm/getmarea?request=gettide&id=72&format=json&date=20260416
+    url = f"http://ideihm.covam.es/api-ihm/getmarea?request=gettide&id={id_puerto}&format=json&date={fecha_api}"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0",
-        "Referer": "https://ideihm.covam.es/ihm/mareas.html"
+        "Accept": "application/json"
     }
 
     try:
+        # Probamos con la URL oficial
         response = requests.get(url, headers=headers, timeout=15, verify=False)
         if response.status_code == 200:
             return response.json()
-        return {"error": f"Servidor inaccesible (Status: {response.status_code})"}
+        return {"error": f"API Error {response.status_code}"}
     except Exception as e:
-        return {"error": f"Fallo de red: {str(e)}"}
+        return {"error": f"Fallo de conexión: {str(e)}"}
 
 # --- INTERFAZ ---
 st.title("⚓ UR Abentura - Operatibitatea")
-centro = st.sidebar.radio("Hautatu Zentroa:", list(BASES.keys()))
+st.write("Datos oficiales del Instituto Hidrográfico de la Marina")
 
-st.header(f"🌊 Mareak: Bermeo (Referencia para {centro})")
-datos_api = llamar_api_ihm(BASES[centro], datetime.date.today())
+# Selector de fecha para el buscador
+fecha_consulta = st.date_input("Aukeratu data / Selecciona fecha:", datetime.date.today())
 
-if "error" in datos_api:
-    st.error(datos_api["error"])
-    st.info("💡 Si falla la conexión, es por el firewall militar. Los datos están llegando bien al navegador pero el servidor bloquea a la App.")
-else:
-    try:
-        # Extraemos la lista de mareas según tu estructura JSON
-        # mareas -> datos -> marea
-        marea_dict = datos_api['mareas']['datos']['marea']
+if st.button("Ikusi Mareak / Ver Mareas"):
+    with st.spinner("Cargando datos oficiales..."):
+        datos = obtener_mareas_ihm(ID_BERMEO, fecha_consulta)
         
-        # Como vienen como "0", "1", "2"... los pasamos a una lista limpia
-        eventos = list(marea_dict.values()) if isinstance(marea_dict, dict) else marea_dict
+        if "error" in datos:
+            st.error(datos["error"])
+            st.info("Si persiste el error de conexión, es probable que el servidor de la Armada bloquee el acceso desde la nube (Streamlit).")
+        else:
+            try:
+                # Acceso a la estructura: mareas -> datos -> marea
+                lista_mareas = datos['mareas']['datos']['marea']
+                
+                # Convertimos a lista si viene como diccionario indexado
+                eventos = list(lista_mareas.values()) if isinstance(lista_mareas, dict) else lista_mareas
+                
+                st.subheader(f"Portua: {datos['mareas']['puerto']} - Eguna: {fecha_consulta}")
+                
+                cols = st.columns(len(eventos))
+                for i, m in enumerate(eventos):
+                    with cols[i]:
+                        # Clasificamos por tipo
+                        tipo = m['tipo'].upper()
+                        color = "normal" if "PLEAMAR" in tipo else "inverse"
+                        icono = "⬆️" if "PLEAMAR" in tipo else "⬇️"
+                        
+                        st.metric(
+                            label=f"{icono} {tipo}",
+                            value=m['hora'],
+                            delta=f"{m['altura']}m",
+                            delta_color=color
+                        )
+                
+                st.caption(f"Copyright: {datos['mareas']['copyright']}")
 
-        # Mostrar resultados en columnas
-        cols = st.columns(len(eventos))
-        for i, m in enumerate(eventos):
-            with cols[i]:
-                es_plea = "pleamar" in m['tipo'].lower()
-                st.metric(
-                    label=f"{'⬆️' if es_plea else '⬇️'} {m['tipo'].upper()}",
-                    value=m['hora'],
-                    delta=f"{m['altura']}m",
-                    delta_color="normal" if es_plea else "inverse"
-                )
-        
-        st.success(f"Datu eguneratuak: {datos_api['mareas']['fecha']}")
-
-    except Exception as e:
-        st.warning("Egitura errorea datuak irakurtzean.")
-        st.write(datos_api) # Para ver qué ha fallado en la lectura
+            except Exception as e:
+                st.error("Error al procesar el formato de los datos.")
+                st.write("Estructura recibida:", datos)
 
 st.divider()
-st.caption("UR line © 2026 - Bermeo Ref. 72")
+st.caption("UR line © 2026 - API IHM Standard Compliance")
