@@ -136,4 +136,73 @@ def mostrar_progreso_marea(m_datos):
             return
     st.caption("Eguneko marea guztiak pasatu dira.")
 
-#
+# --- SIDEBAR ---
+BASES = {
+    "Ur Urdaibai": {"tipo": "mar", "lat": 43.396, "lon": -2.684, "id_ihm": "72"},
+    "Ur Lekeitio": {"tipo": "mar", "lat": 43.364, "lon": -2.503, "id_ihm": "72"},
+    "Mendexa Abentura Park": {"tipo": "monte", "lat": 43.361, "lon": -2.495, "id_ihm": None}
+}
+
+with st.sidebar:
+    st.image("https://www.urdaibai.com/wp-content/uploads/2021/03/logo-ur-abentura.png", width=150)
+    centro_sel = st.radio("Zentroa:", list(BASES.keys()))
+
+info = BASES[centro_sel]
+st.title(f"📍 {centro_sel}")
+clima = obtener_clima_real(info['lat'], info['lon'], info['tipo'])
+
+if clima:
+    st.markdown(f"### {clima['icono']} {clima['estado']}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Tenperatura", f"{clima['temp']}°C")
+    if info['tipo'] == "mar":
+        c2.metric("Ura (Est.)", f"{clima['agua']}°C")
+        c3.metric("Olatua", f"{clima['olas_h']}m", f"Norabidea: {clima['olas_dir']}")
+        cv1, cv2, cv3 = st.columns(3)
+        cv1.metric("Haizea", f"{clima['viento']} km/h")
+        cv2.metric("Raxak", f"{clima['rachas']} km/h", delta="⚠️" if clima['rachas']>25 else None)
+        cv3.metric("Norabidea", clima['dir_v'])
+        
+        st.divider()
+        m_hoy = consultar_marea_ihm(info['id_ihm'], datetime.date.today())
+        if m_hoy:
+            mostrar_progreso_marea(m_hoy)
+            cp, cb = st.columns(2)
+            with cp:
+                st.info("⬆️ **Gora / Pleamar**")
+                for p in m_hoy['p']: st.write(f"• **{p['h']}** ({p['a']}m)")
+            with cb:
+                st.warning("⬇️ **Behera / Bajamar**")
+                for b in m_hoy['b']: st.write(f"• **{b['h']}** ({b['a']}m)")
+            st.write(f"📊 **Koefiziente Kalkulatua:** {m_hoy['coef']}")
+    else:
+        c2.metric("Sentsazioa", f"{clima['sensacion']}°C")
+        c3.metric("Euria", f"{clima['lluvia']} mm")
+        cv1, cv2, cv3 = st.columns(3)
+        cv1.metric("Haizea", f"{clima['viento']} km/h")
+        cv2.metric("Raxak", f"{clima['rachas']} km/h")
+        cv3.metric("Norabidea", clima['dir_v'])
+        st.divider()
+        st.subheader("🌲 Mendexa Segurtasuna")
+        m1, m2 = st.columns(2)
+        riesgo = "ALTUA" if clima['weather_code'] >= 95 else "Baxua"
+        m1.metric("Ekaitz Arriskua", riesgo, delta="⚠️ ITXITA" if riesgo == "ALTUA" else "OK")
+        m2.metric("Max. Haizea", f"{clima['rachas']} km/h", delta="KONTUZ" if clima['rachas'] > 30 else "OK")
+
+if info['tipo'] == "mar":
+    with st.expander("🔍 Marea Bilatzailea (Ordu zuzendua / Hora corregida)"):
+        f_bus = st.date_input("Data:", datetime.date.today())
+        if st.button("Ikusi"):
+            res = consultar_marea_ihm(info['id_ihm'], f_bus)
+            if res:
+                r1, r2 = st.columns(2)
+                with r1:
+                    st.info("⬆️ **Pleamar**")
+                    for p in res['p']: st.write(f"• **{p['h']}** ({p['a']}m)")
+                with r2:
+                    st.warning("⬇️ **Bajamar**")
+                    for b in res['b']: st.write(f"• **{b['h']}** ({b['a']}m)")
+                st.write(f"📊 **Koefizientea:** {res['coef']}")
+
+st.divider()
+st.caption("UR Abentura PRO © 2026")
