@@ -5,38 +5,42 @@ import pandas as pd
 import urllib3
 import pytz
 
-# --- CONFIGURACIÓN DE SEGURIDAD Y PÁGINA ---
+# --- CONFIGURACIÓN ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 st.set_page_config(page_title="UR Abentura PRO", layout="wide", page_icon="⚓")
 
-# Estilos visuales personalizados
+# --- CSS ADAPTATIVO (MODO CLARO / MODO OSCURO) ---
 st.markdown("""
     <style>
-    .main { background-color: #f8f9fa; }
-    .stMetric { background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #e9ecef; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-    [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #dee2e6; }
+    /* Usamos variables nativas para que se adapte al Dark Mode del móvil */
+    .stMetric { 
+        background-color: var(--secondary-background-color); 
+        padding: 20px; 
+        border-radius: 12px; 
+        border: 1px solid var(--border-color);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05); 
+    }
     .stProgress > div > div > div > div { background-color: #007bff; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- LÓGICA DE CORRECCIÓN HORARIA INTELIGENTE ---
+# --- ZONA HORARIA LOCAL ---
+tz_madrid = pytz.timezone('Europe/Madrid')
+now_local = datetime.datetime.now(tz_madrid)
+
+# --- LÓGICA DE CORRECCIÓN HORARIA (DST) ---
 def corregir_hora_exacta(hora_str, fecha_obj):
-    """Calcula el desfase (+1 o +2) específico para la fecha consultada (DST)"""
     try:
-        tz = pytz.timezone('Europe/Madrid')
-        # Creamos una fecha de referencia al mediodía para detectar el offset de ese día
         dt_consulta = datetime.datetime.combine(fecha_obj, datetime.time(12, 0))
-        offset_segundos = tz.utcoffset(dt_consulta).total_seconds()
+        offset_segundos = tz_madrid.utcoffset(dt_consulta).total_seconds()
         horas_a_sumar = int(offset_segundos / 3600)
-        
-        # Aplicamos la suma a la hora recibida de la API
         h_api = datetime.datetime.strptime(hora_str, "%H:%M")
         h_corregida = h_api + datetime.timedelta(hours=horas_a_sumar)
         return h_corregida.strftime("%H:%M")
     except:
         return hora_str
 
-# --- FUNCIONES DE APOYO (FLECHAS Y CLIMA) ---
+# --- FUNCIONES DE APOYO ---
 def obtener_flecha_dir(grados):
     if grados is None: return ""
     if 337.5 <= grados or grados < 22.5: return "⬇️ (N)"
@@ -50,40 +54,67 @@ def obtener_flecha_dir(grados):
     return ""
 
 def codigo_clima_a_icono(codigo):
-    if codigo <= 1: return "Eguzkitsua / Soleado", "☀️"
-    elif codigo <= 3: return "Hodeitsu / Nublado", "⛅"
-    elif codigo <= 48: return "Lainoa / Niebla", "🌫️"
-    elif codigo <= 67 or codigo in [80, 81, 82]: return "Euria / Lluvia", "🌧️"
-    elif codigo >= 95: return "Ekaitza / Tormenta", "⛈️"
-    return "Ezezaguna", "❓"
+    if codigo <= 1: return "☀️"
+    elif codigo <= 3: return "⛅"
+    elif codigo <= 48: return "🌫️"
+    elif codigo <= 67 or codigo in [80, 81, 82]: return "🌧️"
+    elif codigo >= 95: return "⛈️"
+    return "❓"
 
-# --- API CLIMA Y OLAS ---
+def texto_clima(codigo):
+    if codigo <= 1: return "Eguzkitsua / Soleado"
+    elif codigo <= 3: return "Hodeitsu / Nublado"
+    elif codigo <= 48: return "Lainoa / Niebla"
+    elif codigo <= 67 or codigo in [80, 81, 82]: return "Euria / Lluvia"
+    elif codigo >= 95: return "Ekaitza / Tormenta"
+    return "Ezezaguna"
+
+# --- API CLIMA (CON LUZ Y POR HORAS) ---
 @st.cache_data(ttl=900)
-def obtener_clima_real(lat, lon, tipo):
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=Europe%2FMadrid"
+def obtener_clima_completo(lat, lon, tipo):
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=temperature_2m,precipitation,wind_speed_10m,weather_code&daily=sunrise,sunset&timezone=Europe%2FMadrid"
     try:
-        res = requests.get(url, timeout=5).json()['current']
-        estado, icono = codigo_clima_a_icono(res['weather_code'])
+        res = requests.get(url, timeout=5).json()
+        curr = res['current']
+        
         datos = {
-            "estado": estado, "icono": icono, "temp": res['temperature_2m'],
-            "sensacion": res['apparent_temperature'], "lluvia": res['precipitation'],
-            "viento": res['wind_speed_10m'], "rachas": res['wind_gusts_10m'],
-            "dir_v": obtener_flecha_dir(res['wind_direction_10m']),
-            "weather_code": res['weather_code']
+            "estado": texto_clima(curr['weather_code']),
+            "icono": codigo_clima_a_icono(curr['weather_code']),
+            "temp": curr['temperature_2m'],
+            "sensacion": curr['apparent_temperature'],
+            "lluvia": curr['precipitation'],
+            "viento": curr['wind_speed_10m'],
+            "rachas": curr['wind_gusts_10m'],
+            "dir_v": obtener_flecha_dir(curr['wind_direction_10m']),
+            "weather_code": curr['weather_code'],
+            "amanecer": res['daily']['sunrise'][0][-5:], # Extrae "HH:MM"
+            "atardecer": res['daily']['sunset'][0][-5:],
+            "hourly_times": res['hourly']['time'],
+            "hourly_temps": res['hourly']['temperature_2m'],
+            "hourly_rain": res['hourly']['precipitation'],
+            "hourly_wind": res['hourly']['wind_speed_10m'],
+            "hourly_icons": [codigo_clima_a_icono(c) for c in res['hourly']['weather_code']]
         }
+        
+        # API Marina (incluye Temperatura del Océano oficial)
         if tipo == "mar":
-            url_o = f"https://marine-api.open-meteo.com/v1/marine?latitude={lat}&longitude={lon}&current=wave_height,wave_period,wave_direction&timezone=Europe%2FMadrid"
+            url_o = f"https://marine-api.open-meteo.com/v1/marine?latitude={lat}&longitude={lon}&current=wave_height,wave_period,wave_direction,ocean_temperature&timezone=Europe%2FMadrid"
             res_o = requests.get(url_o, timeout=5).json()['current']
+            
+            # Si el satélite falla en dar el agua, usamos la fórmula antigua de backup
+            agua_api = res_o.get('ocean_temperature')
+            agua_final = agua_api if agua_api is not None else round(12.0 + (now_local.month * 0.8), 1)
+            
             datos.update({
                 "olas_h": res_o.get('wave_height', 0),
                 "olas_p": res_o.get('wave_period', 0),
                 "olas_dir": obtener_flecha_dir(res_o.get('wave_direction', 0)),
-                "agua": round(12.0 + (datetime.date.today().month * 0.8), 1)
+                "agua": agua_final
             })
         return datos
     except: return None
 
-# --- API MAREAS CON CÁLCULO DE COEFICIENTE REALISTA ---
+# --- API MAREAS ---
 @st.cache_data(ttl=3600)
 def consultar_marea_ihm(id_puerto, fecha_obj):
     if not id_puerto: return None
@@ -94,7 +125,6 @@ def consultar_marea_ihm(id_puerto, fecha_obj):
             raw = res.json()
             marea_data = raw['mareas']['datos']['marea']
             eventos = list(marea_data.values()) if isinstance(marea_data, dict) else marea_data
-            
             pleas, bajas = [], []
             for e in eventos:
                 h_api = e.get('hora', '--:--')[:5]
@@ -104,21 +134,17 @@ def consultar_marea_ihm(id_puerto, fecha_obj):
                 if 'pleamar' in t: pleas.append({"h": h_corregida, "a": a})
                 elif 'bajamar' in t: bajas.append({"h": h_corregida, "a": a})
             
-            # Cálculo de coeficiente mejorado (Escala Cantábrico)
             max_p = max([x['a'] for x in pleas]) if pleas else 0
             min_b = min([x['a'] for x in bajas]) if bajas else 0
             amplitud = max_p - min_b
             coef_calc = round((amplitud / 3.7) * 90)
             coef_final = max(20, min(120, coef_calc))
-            
             return {"p": pleas, "b": bajas, "coef": coef_final}
     except: return None
 
-# --- BARRA DE PROGRESO DE MAREA ---
+# --- BARRA DE PROGRESO ---
 def mostrar_progreso_marea(m_datos):
-    tz = pytz.timezone('Europe/Madrid')
-    now_local = datetime.datetime.now(tz).replace(tzinfo=None)
-    
+    now_naive = now_local.replace(tzinfo=None)
     events = []
     hoy = datetime.date.today()
     for m in m_datos['p']:
@@ -127,48 +153,47 @@ def mostrar_progreso_marea(m_datos):
         events.append({"t": datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Baja"})
     
     events.sort(key=lambda x: x['t'])
-    
     for i in range(len(events)-1):
-        if events[i]['t'] <= now_local <= events[i+1]['t']:
+        if events[i]['t'] <= now_naive <= events[i+1]['t']:
             total = (events[i+1]['t'] - events[i]['t']).total_seconds()
-            transcurrido = (now_local - events[i]['t']).total_seconds()
+            transcurrido = (now_naive - events[i]['t']).total_seconds()
             progreso = transcurrido / total
-            
-            mins = int((events[i+1]['t'] - now_local).total_seconds() / 60)
+            mins = int((events[i+1]['t'] - now_naive).total_seconds() / 60)
             estado = "IGOTZEN (Subiendo) ⬆️" if events[i+1]['tipo'] == "Plea" else "JAISTEN (Bajando) ⬇️"
-            
             st.write(f"⏳ **Marea egoera:** {estado}")
             st.progress(progreso)
             st.caption(f"Hurrengo marea ({events[i+1]['tipo']}) {mins} minututan")
             return
     st.caption("Eguneko marea guztiak pasatu dira.")
 
-# --- CONFIGURACIÓN DE LAS BASES ---
+# --- SIDEBAR ---
 BASES = {
     "Ur Urdaibai": {"tipo": "mar", "lat": 43.396, "lon": -2.684, "id_ihm": "72"},
     "Ur Lekeitio": {"tipo": "mar", "lat": 43.364, "lon": -2.503, "id_ihm": "72"},
     "Mendexa Abentura Park": {"tipo": "monte", "lat": 43.361, "lon": -2.495, "id_ihm": None}
 }
 
-# --- SIDEBAR CON LOGO LOCAL ---
 with st.sidebar:
     try:
         st.image("logo.png", width=180)
     except:
         st.title("⚓ UR Abentura")
         
-    centro_sel = st.radio("Zentroa / Centro:", list(BASES.keys()))
+    centro_sel = st.radio("Zentroa:", list(BASES.keys()))
+    info = BASES[centro_sel]
+    clima = obtener_clima_completo(info['lat'], info['lon'], info['tipo'])
+    
     st.divider()
     st.subheader("☀️ Argia / Luz")
-    st.write("🌅 **Egunsentia:** 07:15")
-    st.write("🌇 **Iluntzea:** 21:00")
+    if clima:
+        st.write(f"🌅 **Egunsentia:** {clima['amanecer']}")
+        st.write(f"🌇 **Iluntzea:** {clima['atardecer']}")
     st.divider()
     st.caption("UR line PRO © 2026")
 
-# --- CUERPO PRINCIPAL ---
-info = BASES[centro_sel]
+# --- CABECERA PRINCIPAL ---
+st.caption(f"📅 **{now_local.strftime('%Y-%m-%d')}** | ⏰ **{now_local.strftime('%H:%M')}**")
 st.title(f"📍 {centro_sel}")
-clima = obtener_clima_real(info['lat'], info['lon'], info['tipo'])
 
 if clima:
     st.markdown(f"### {clima['icono']} {clima['estado']}")
@@ -176,7 +201,7 @@ if clima:
     c1.metric("Tenperatura", f"{clima['temp']}°C")
     
     if info['tipo'] == "mar":
-        c2.metric("Ura (Est.)", f"{clima['agua']}°C")
+        c2.metric("Ura (Boya/Est.)", f"{clima['agua']}°C")
         c3.metric("Olatua", f"{clima['olas_h']}m", f"Norabidea: {clima['olas_dir']}")
         
         cv1, cv2, cv3 = st.columns(3)
@@ -197,7 +222,7 @@ if clima:
                 for b in m_hoy['b']: st.write(f"• **{b['h']}** ({b['a']}m)")
             st.write(f"📊 **Koefiziente Kalkulatua:** {m_hoy['coef']}")
             
-    else: # LÓGICA ESPECÍFICA PARA MENDEXA (MONTE)
+    else: # MENDEXA
         c2.metric("Sentsazioa", f"{clima['sensacion']}°C")
         c3.metric("Euria", f"{clima['lluvia']} mm")
         
@@ -213,10 +238,29 @@ if clima:
         m1.metric("Ekaitz Arriskua", riesgo_t, delta="⚠️ ITXITA" if riesgo_t == "ALTUA" else "IREKITA")
         m2.metric("Max. Haizea", f"{clima['rachas']} km/h", delta="KONTUZ" if clima['rachas'] > 30 else "OK")
 
+    # --- PREVISIÓN POR HORAS (HOURLY) ---
+    st.divider()
+    with st.expander("⏱️ Datoak orduz ordu / Previsión 12h"):
+        # Buscamos el índice de la hora actual
+        hora_actual_str = now_local.strftime("%Y-%m-%dT%H:00")
+        try:
+            idx = clima['hourly_times'].index(hora_actual_str)
+        except ValueError:
+            idx = 0 # Fallback por si la hora no coincide exactamente
+            
+        # Creamos una tabla con las próximas 12 horas
+        tiempos = [t[-5:] for t in clima['hourly_times'][idx:idx+12]] # Solo sacamos la hora (HH:MM)
+        iconos = clima['hourly_icons'][idx:idx+12]
+        temps = clima['hourly_temps'][idx:idx+12]
+        vientos = clima['hourly_wind'][idx:idx+12]
+        
+        for t, ic, te, vi in zip(tiempos, iconos, temps, vientos):
+            st.write(f"**{t}** | {ic} | 🌡️ {te}°C | 💨 {vi} km/h")
+
 # --- BUSCADOR DE MAREAS ---
 if info['tipo'] == "mar":
     st.divider()
-    with st.expander("🔍 Marea Bilatzailea (Ordu zuzendua / Hora corregida)"):
+    with st.expander("🔍 Marea Bilatzailea (Ordu zuzendua)"):
         f_bus = st.date_input("Data:", datetime.date.today())
         if st.button("Ikusi"):
             res = consultar_marea_ihm(info['id_ihm'], f_bus)
@@ -231,4 +275,4 @@ if info['tipo'] == "mar":
                 st.write(f"📊 **Koefizientea:** {res['coef']}")
 
 st.divider()
-st.caption("UR LINE © 2026 ")
+st.caption("UR Abentura PRO © 2026 - Eskerrik asko zure lanagatik! ⚓")
