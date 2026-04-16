@@ -64,7 +64,7 @@ def texto_clima(codigo):
 def obtener_clima_completo(lat, lon, tipo):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=temperature_2m,precipitation,wind_speed_10m,weather_code&daily=sunrise,sunset&timezone=Europe%2FMadrid"
     try:
-        res = requests.get(url, timeout=15).json() # Tiempo ampliado para evitar fallos
+        res = requests.get(url, timeout=15).json()
         curr = res['current']
         
         datos = {
@@ -87,15 +87,23 @@ def obtener_clima_completo(lat, lon, tipo):
         }
         
         if tipo == "mar":
-            url_o = f"https://marine-api.open-meteo.com/v1/marine?latitude={lat}&longitude={lon}&current=wave_height,wave_period,wave_direction,ocean_temperature&timezone=Europe%2FMadrid"
-            res_o = requests.get(url_o, timeout=15).json()
-            if 'current' in res_o:
-                agua_api = res_o['current'].get('ocean_temperature')
+            # Intentamos cargar la API Marina, si falla no rompemos el resto
+            try:
+                url_o = f"https://marine-api.open-meteo.com/v1/marine?latitude={lat}&longitude={lon}&current=wave_height,wave_period,wave_direction,ocean_temperature&timezone=Europe%2FMadrid"
+                res_o = requests.get(url_o, timeout=10).json()
+                if 'current' in res_o:
+                    agua_api = res_o['current'].get('ocean_temperature')
+                    datos.update({
+                        "olas_h": res_o['current'].get('wave_height', '--'),
+                        "olas_p": res_o['current'].get('wave_period', '--'),
+                        "olas_dir": obtener_flecha_dir(res_o['current'].get('wave_direction', None)),
+                        "agua": agua_api if agua_api is not None else round(12.0 + (now_local.month * 0.8), 1)
+                    })
+            except:
+                # Valores por defecto si la boya falla
                 datos.update({
-                    "olas_h": res_o['current'].get('wave_height', 0),
-                    "olas_p": res_o['current'].get('wave_period', 0),
-                    "olas_dir": obtener_flecha_dir(res_o['current'].get('wave_direction', 0)),
-                    "agua": agua_api if agua_api is not None else round(12.0 + (now_local.month * 0.8), 1)
+                    "olas_h": "--", "olas_p": "--", "olas_dir": "", 
+                    "agua": round(12.0 + (now_local.month * 0.8), 1)
                 })
         return datos
     except Exception as e: 
@@ -182,10 +190,14 @@ with st.sidebar:
     st.caption("UR line PRO © 2026")
 
 # --- CABECERA PRINCIPAL ---
-st.caption(f"📅 **{now_local.strftime('%Y-%m-%d')}** | ⏰ **{now_local.strftime('%H:%M')}**")
-st.title(f"📍 {centro_sel}")
+c_tit, c_fecha = st.columns([2, 1])
+with c_tit:
+    st.title(f"📍 {centro_sel}")
+with c_fecha:
+    # Fecha y Hora destacadas arriba a la derecha
+    st.info(f"📅 **{now_local.strftime('%Y-%m-%d')}** &nbsp;|&nbsp; ⏰ **{now_local.strftime('%H:%M')}**")
 
-# 1. BLOQUE DE CLIMA (INDEPENDIENTE)
+# 1. BLOQUE DE CLIMA
 if clima and "error" not in clima:
     st.markdown(f"### {clima['icono']} {clima['estado']}")
     c1, c2, c3 = st.columns(3)
@@ -215,13 +227,18 @@ if clima and "error" not in clima:
         m1.metric("Ekaitz Arriskua", riesgo_t, delta="⚠️ ITXITA" if riesgo_t == "ALTUA" else "IREKITA")
         m2.metric("Max. Haizea", f"{clima['rachas']} km/h", delta="KONTUZ" if clima['rachas'] > 30 else "OK")
 
-    # PREVISIÓN 12H
+    # PREVISIÓN 12H (Solo horas futuras)
     st.divider()
     with st.expander("⏱️ Datoak orduz ordu / Previsión 12h"):
         hora_actual_str = now_local.strftime("%Y-%m-%dT%H:00")
-        try: idx = clima['hourly_times'].index(hora_actual_str)
-        except: idx = 0 
-            
+        
+        # Filtramos para encontrar la hora actual o la siguiente
+        idx = 0
+        for i, ht in enumerate(clima['hourly_times']):
+            if ht >= hora_actual_str:
+                idx = i
+                break
+                
         tiempos = [t[-5:] for t in clima['hourly_times'][idx:idx+12]]
         iconos = clima['hourly_icons'][idx:idx+12]
         temps = clima['hourly_temps'][idx:idx+12]
