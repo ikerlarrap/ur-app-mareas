@@ -3,25 +3,29 @@ import datetime
 import requests
 import pandas as pd
 import urllib3
-import pytz # Para gestión de zonas horarias
+import pytz
 
 # --- CONFIGURACIÓN ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 st.set_page_config(page_title="UR Abentura PRO", layout="wide", page_icon="⚓")
 
-# --- LÓGICA DE CORRECCIÓN HORARIA ---
-def corregir_hora_local(hora_str):
-    """Convierte la hora de la API (UTC/Solar) a la hora oficial de Euskadi"""
+st.markdown("""
+    <style>
+    .main { background-color: #f8f9fa; }
+    .stMetric { background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #e9ecef; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+    [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #dee2e6; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- LÓGICA DE CORRECCIÓN HORARIA INTELIGENTE ---
+def corregir_hora_exacta(hora_str, fecha_obj):
+    """Detecta automáticamente si la fecha buscada es horario de verano (+2) o invierno (+1)"""
     try:
-        # Obtenemos el desfase actual (verano +2, invierno +1)
         tz = pytz.timezone('Europe/Madrid')
-        ahora = datetime.datetime.now(tz)
-        desfase = ahora.utcoffset().total_seconds() / 3600
-        
-        # Sumamos el desfase a la hora recibida
-        h_api = datetime.datetime.strptime(hora_str, "%H:%M")
-        h_real = h_api + datetime.timedelta(hours=int(desfase))
-        return h_real.strftime("%H:%M")
+        h_api = datetime.datetime.strptime(hora_str, "%H:%M").time()
+        dt_ingenuo = datetime.datetime.combine(fecha_obj, h_api)
+        dt_localizado = tz.localize(dt_ingenuo)
+        return dt_localizado.strftime("%H:%M")
     except:
         return hora_str
 
@@ -49,33 +53,34 @@ def codigo_clima_a_icono(codigo):
 # --- API CLIMA ---
 @st.cache_data(ttl=900)
 def obtener_clima_real(lat, lon, tipo):
-    url_clima = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=Europe%2FMadrid"
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=Europe%2FMadrid"
     try:
-        req_clima = requests.get(url_clima, timeout=5).json()['current']
-        estado, icono = codigo_clima_a_icono(req_clima['weather_code'])
+        res = requests.get(url, timeout=5).json()['current']
+        estado, icono = codigo_clima_a_icono(res['weather_code'])
         datos = {
-            "estado": estado, "icono": icono, "temp": req_clima['temperature_2m'],
-            "sensacion": req_clima['apparent_temperature'], "lluvia": req_clima['precipitation'],
-            "viento": req_clima['wind_speed_10m'], "rachas": req_clima['wind_gusts_10m'],
-            "dir_v": obtener_flecha_dir(req_clima['wind_direction_10m']),
-            "weather_code": req_clima['weather_code']
+            "estado": estado, "icono": icono, "temp": res['temperature_2m'],
+            "sensacion": res['apparent_temperature'], "lluvia": res['precipitation'],
+            "viento": res['wind_speed_10m'], "rachas": res['wind_gusts_10m'],
+            "dir_v": obtener_flecha_dir(res['wind_direction_10m']),
+            "weather_code": res['weather_code']
         }
         if tipo == "mar":
-            url_olas = f"https://marine-api.open-meteo.com/v1/marine?latitude={lat}&longitude={lon}&current=wave_height,wave_period,wave_direction&timezone=Europe%2FMadrid"
-            req_olas = requests.get(url_olas, timeout=5).json()['current']
-            datos["olas_h"] = req_olas.get('wave_height', 0)
-            datos["olas_p"] = req_olas.get('wave_period', 0)
-            datos["olas_dir"] = obtener_flecha_dir(req_olas.get('wave_direction', 0))
-            datos["agua"] = round(12.0 + (datetime.date.today().month * 0.8), 1) 
+            url_o = f"https://marine-api.open-meteo.com/v1/marine?latitude={lat}&longitude={lon}&current=wave_height,wave_period,wave_direction&timezone=Europe%2FMadrid"
+            res_o = requests.get(url_o, timeout=5).json()['current']
+            datos.update({
+                "olas_h": res_o.get('wave_height', 0),
+                "olas_p": res_o.get('wave_period', 0),
+                "olas_dir": obtener_flecha_dir(res_o.get('wave_direction', 0)),
+                "agua": round(12.0 + (datetime.date.today().month * 0.8), 1)
+            })
         return datos
     except: return None
 
-# --- API MAREAS CON CORRECCIÓN ---
+# --- API MAREAS CON DST AUTOMÁTICO ---
 @st.cache_data(ttl=3600)
 def consultar_marea_ihm(id_puerto, fecha_obj):
     if not id_puerto: return None
-    fecha_api = fecha_obj.strftime("%Y%m%d")
-    url = f"http://ideihm.covam.es/api-ihm/getmarea?request=gettide&id={id_puerto}&format=json&date={fecha_api}"
+    url = f"http://ideihm.covam.es/api-ihm/getmarea?request=gettide&id={id_puerto}&format=json&date={fecha_obj.strftime('%Y%m%d')}"
     try:
         res = requests.get(url, timeout=10, verify=False)
         if res.status_code == 200:
@@ -84,8 +89,9 @@ def consultar_marea_ihm(id_puerto, fecha_obj):
             eventos = list(marea_data.values()) if isinstance(marea_data, dict) else marea_data
             pleas, bajas = [], []
             for e in eventos:
-                # Aplicamos la corrección aquí
-                h_corregida = corregir_hora_local(e.get('hora', '--:--')[:5])
+                h_api = e.get('hora', '--:--')[:5]
+                # AQUÍ SE APLICA LA MAGIA DEL CAMBIO DE HORA SEGÚN LA FECHA
+                h_corregida = corregir_hora_exacta(h_api, fecha_obj)
                 a = float(e.get('altura', 0))
                 t = (e.get('tipo', '')).lower()
                 if 'pleamar' in t: pleas.append({"h": h_corregida, "a": a})
@@ -97,14 +103,16 @@ def consultar_marea_ihm(id_puerto, fecha_obj):
             return {"p": pleas, "b": bajas, "coef": coef_calc}
     except: return None
 
-# --- BARRA DE PROGRESO ---
+# --- BARRA DE PROGRESO CORREGIDA ---
 def mostrar_progreso_marea(m_datos):
     tz = pytz.timezone('Europe/Madrid')
     now = datetime.datetime.now(tz).replace(tzinfo=None)
     events = []
-    for m in m_datos['p']: events.append({"t": datetime.datetime.strptime(f"{datetime.date.today()} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Plea"})
-    for m in m_datos['b']: events.append({"t": datetime.datetime.strptime(f"{datetime.date.today()} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Baja"})
+    hoy = datetime.date.today()
+    for m in m_datos['p']: events.append({"t": datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Plea"})
+    for m in m_datos['b']: events.append({"t": datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Baja"})
     events.sort(key=lambda x: x['t'])
+    
     for i in range(len(events)-1):
         if events[i]['t'] <= now <= events[i+1]['t']:
             progreso = (now - events[i]['t']).total_seconds() / (events[i+1]['t'] - events[i]['t']).total_seconds()
@@ -114,8 +122,9 @@ def mostrar_progreso_marea(m_datos):
             st.progress(progreso)
             st.caption(f"Hurrengo marea ({events[i+1]['tipo']}) {mins} minututan")
             return
+    st.caption("Eguneko marea guztiak pasatu dira.")
 
-# --- APP ---
+# --- SIDEBAR ---
 BASES = {
     "Ur Urdaibai": {"tipo": "mar", "lat": 43.396, "lon": -2.684, "id_ihm": "72"},
     "Ur Lekeitio": {"tipo": "mar", "lat": 43.364, "lon": -2.503, "id_ihm": "72"},
@@ -153,9 +162,8 @@ if clima:
             with cb:
                 st.warning("⬇️ **Behera / Bajamar**")
                 for b in m_hoy['b']: st.write(f"• **{b['h']}** ({b['a']}m)")
-            st.write(f"📊 **Koefizientea:** {m_hoy['coef']}")
+            st.write(f"📊 **Koefiziente Kalkulatua:** {m_hoy['coef']}")
     else:
-        # Lógica Mendexa
         c2.metric("Sentsazioa", f"{clima['sensacion']}°C")
         c3.metric("Euria", f"{clima['lluvia']} mm")
         cv1, cv2, cv3 = st.columns(3)
@@ -182,6 +190,7 @@ if info['tipo'] == "mar":
                 with r2:
                     st.warning("⬇️ **Bajamar**")
                     for b in res['b']: st.write(f"• **{b['h']}** ({b['a']}m)")
+                st.write(f"📊 **Koefizientea:** {res['coef']}")
 
 st.divider()
 st.caption("UR Abentura PRO © 2026")
