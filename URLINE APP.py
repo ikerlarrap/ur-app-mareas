@@ -3,26 +3,29 @@ import datetime
 import requests
 import pandas as pd
 import urllib3
+import pytz # Para gestión de zonas horarias
 
 # --- CONFIGURACIÓN ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 st.set_page_config(page_title="UR Abentura PRO", layout="wide", page_icon="⚓")
 
-st.markdown("""
-    <style>
-    .main { background-color: #f8f9fa; }
-    .stMetric { background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #e9ecef; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-    [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #dee2e6; }
-    </style>
-    """, unsafe_allow_html=True)
+# --- LÓGICA DE CORRECCIÓN HORARIA ---
+def corregir_hora_local(hora_str):
+    """Convierte la hora de la API (UTC/Solar) a la hora oficial de Euskadi"""
+    try:
+        # Obtenemos el desfase actual (verano +2, invierno +1)
+        tz = pytz.timezone('Europe/Madrid')
+        ahora = datetime.datetime.now(tz)
+        desfase = ahora.utcoffset().total_seconds() / 3600
+        
+        # Sumamos el desfase a la hora recibida
+        h_api = datetime.datetime.strptime(hora_str, "%H:%M")
+        h_real = h_api + datetime.timedelta(hours=int(desfase))
+        return h_real.strftime("%H:%M")
+    except:
+        return hora_str
 
-BASES = {
-    "Ur Urdaibai": {"tipo": "mar", "lat": 43.396, "lon": -2.684, "id_ihm": "72"},
-    "Ur Lekeitio": {"tipo": "mar", "lat": 43.364, "lon": -2.503, "id_ihm": "72"},
-    "Mendexa Abentura Park": {"tipo": "monte", "lat": 43.361, "lon": -2.495, "id_ihm": None}
-}
-
-# --- FUNCIONES ---
+# --- FUNCIONES DE APOYO ---
 def obtener_flecha_dir(grados):
     if grados is None: return ""
     if 337.5 <= grados or grados < 22.5: return "⬇️ (N)"
@@ -43,6 +46,7 @@ def codigo_clima_a_icono(codigo):
     elif codigo >= 95: return "Ekaitza / Tormenta", "⛈️"
     return "Ezezaguna", "❓"
 
+# --- API CLIMA ---
 @st.cache_data(ttl=900)
 def obtener_clima_real(lat, lon, tipo):
     url_clima = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=Europe%2FMadrid"
@@ -66,6 +70,7 @@ def obtener_clima_real(lat, lon, tipo):
         return datos
     except: return None
 
+# --- API MAREAS CON CORRECCIÓN ---
 @st.cache_data(ttl=3600)
 def consultar_marea_ihm(id_puerto, fecha_obj):
     if not id_puerto: return None
@@ -79,23 +84,26 @@ def consultar_marea_ihm(id_puerto, fecha_obj):
             eventos = list(marea_data.values()) if isinstance(marea_data, dict) else marea_data
             pleas, bajas = [], []
             for e in eventos:
-                h, a = e.get('hora', '--:--')[:5], float(e.get('altura', 0))
+                # Aplicamos la corrección aquí
+                h_corregida = corregir_hora_local(e.get('hora', '--:--')[:5])
+                a = float(e.get('altura', 0))
                 t = (e.get('tipo', '')).lower()
-                if 'pleamar' in t: pleas.append({"h": h, "a": a})
-                elif 'bajamar' in t: bajas.append({"h": h, "a": a})
+                if 'pleamar' in t: pleas.append({"h": h_corregida, "a": a})
+                elif 'bajamar' in t: bajas.append({"h": h_corregida, "a": a})
             
-            # Coeficiente basado en amplitud
             max_p = max([x['a'] for x in pleas]) if pleas else 0
             min_b = min([x['a'] for x in bajas]) if bajas else 0
             coef_calc = round(((max_p - min_b) / 4.5) * 100)
             return {"p": pleas, "b": bajas, "coef": coef_calc}
     except: return None
 
+# --- BARRA DE PROGRESO ---
 def mostrar_progreso_marea(m_datos):
-    now = datetime.datetime.now()
+    tz = pytz.timezone('Europe/Madrid')
+    now = datetime.datetime.now(tz).replace(tzinfo=None)
     events = []
-    for m in m_datos['p']: events.append({"t": datetime.datetime.strptime(f"{now.date()} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Plea"})
-    for m in m_datos['b']: events.append({"t": datetime.datetime.strptime(f"{now.date()} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Baja"})
+    for m in m_datos['p']: events.append({"t": datetime.datetime.strptime(f"{datetime.date.today()} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Plea"})
+    for m in m_datos['b']: events.append({"t": datetime.datetime.strptime(f"{datetime.date.today()} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Baja"})
     events.sort(key=lambda x: x['t'])
     for i in range(len(events)-1):
         if events[i]['t'] <= now <= events[i+1]['t']:
@@ -108,6 +116,12 @@ def mostrar_progreso_marea(m_datos):
             return
 
 # --- APP ---
+BASES = {
+    "Ur Urdaibai": {"tipo": "mar", "lat": 43.396, "lon": -2.684, "id_ihm": "72"},
+    "Ur Lekeitio": {"tipo": "mar", "lat": 43.364, "lon": -2.503, "id_ihm": "72"},
+    "Mendexa Abentura Park": {"tipo": "monte", "lat": 43.361, "lon": -2.495, "id_ihm": None}
+}
+
 with st.sidebar:
     st.image("https://www.urdaibai.com/wp-content/uploads/2021/03/logo-ur-abentura.png", width=150)
     centro_sel = st.radio("Zentroa:", list(BASES.keys()))
@@ -141,6 +155,7 @@ if clima:
                 for b in m_hoy['b']: st.write(f"• **{b['h']}** ({b['a']}m)")
             st.write(f"📊 **Koefizientea:** {m_hoy['coef']}")
     else:
+        # Lógica Mendexa
         c2.metric("Sentsazioa", f"{clima['sensacion']}°C")
         c3.metric("Euria", f"{clima['lluvia']} mm")
         cv1, cv2, cv3 = st.columns(3)
@@ -155,7 +170,7 @@ if clima:
         m2.metric("Max. Haizea", f"{clima['rachas']} km/h", delta="KONTUZ" if clima['rachas'] > 30 else "OK")
 
 if info['tipo'] == "mar":
-    with st.expander("🔍 Marea Bilatzailea"):
+    with st.expander("🔍 Marea Bilatzailea (Ordu zuzendua / Hora corregida)"):
         f_bus = st.date_input("Data:", datetime.date.today())
         if st.button("Ikusi"):
             res = consultar_marea_ihm(info['id_ihm'], f_bus)
@@ -167,7 +182,6 @@ if info['tipo'] == "mar":
                 with r2:
                     st.warning("⬇️ **Bajamar**")
                     for b in res['b']: st.write(f"• **{b['h']}** ({b['a']}m)")
-                st.write(f"📊 **Koefizientea:** {res['coef']}")
 
 st.divider()
 st.caption("UR Abentura PRO © 2026")
