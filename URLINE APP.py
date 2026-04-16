@@ -237,7 +237,7 @@ with st.sidebar:
         st.warning("Ezin izan da eguzki-ordua kargatu.")
         
     st.divider()
-    st.caption("UR line PRO © 2026")
+    st.caption("URLINE © 2026")
 
 # --- AVISO PARA MÓVILES (HTML INYECTADO) ---
 st.markdown('<div class="mobile-menu-hint">👈 Sakatu goiko ezkerreko botoia zentroa aldatzeko / Toca arriba a la izquierda para cambiar de centro</div>', unsafe_allow_html=True)
