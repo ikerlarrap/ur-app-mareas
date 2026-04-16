@@ -9,26 +9,18 @@ import pytz
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 st.set_page_config(page_title="UR Abentura PRO", layout="wide", page_icon="⚓")
 
-# --- CSS ADAPTATIVO (MODO CLARO / MODO OSCURO) ---
+# --- CSS ADAPTATIVO ---
 st.markdown("""
     <style>
-    /* Usamos variables nativas para que se adapte al Dark Mode del móvil */
-    .stMetric { 
-        background-color: var(--secondary-background-color); 
-        padding: 20px; 
-        border-radius: 12px; 
-        border: 1px solid var(--border-color);
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05); 
-    }
+    .stMetric { background-color: var(--secondary-background-color); padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
     .stProgress > div > div > div > div { background-color: #007bff; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- ZONA HORARIA LOCAL ---
 tz_madrid = pytz.timezone('Europe/Madrid')
 now_local = datetime.datetime.now(tz_madrid)
 
-# --- LÓGICA DE CORRECCIÓN HORARIA (DST) ---
+# --- FUNCIONES ---
 def corregir_hora_exacta(hora_str, fecha_obj):
     try:
         dt_consulta = datetime.datetime.combine(fecha_obj, datetime.time(12, 0))
@@ -37,10 +29,8 @@ def corregir_hora_exacta(hora_str, fecha_obj):
         h_api = datetime.datetime.strptime(hora_str, "%H:%M")
         h_corregida = h_api + datetime.timedelta(hours=horas_a_sumar)
         return h_corregida.strftime("%H:%M")
-    except:
-        return hora_str
+    except: return hora_str
 
-# --- FUNCIONES DE APOYO ---
 def obtener_flecha_dir(grados):
     if grados is None: return ""
     if 337.5 <= grados or grados < 22.5: return "⬇️ (N)"
@@ -69,12 +59,12 @@ def texto_clima(codigo):
     elif codigo >= 95: return "Ekaitza / Tormenta"
     return "Ezezaguna"
 
-# --- API CLIMA (CON LUZ Y POR HORAS) ---
+# --- API CLIMA ---
 @st.cache_data(ttl=900)
 def obtener_clima_completo(lat, lon, tipo):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=temperature_2m,precipitation,wind_speed_10m,weather_code&daily=sunrise,sunset&timezone=Europe%2FMadrid"
     try:
-        res = requests.get(url, timeout=5).json()
+        res = requests.get(url, timeout=15).json() # Tiempo ampliado para evitar fallos
         curr = res['current']
         
         datos = {
@@ -87,7 +77,7 @@ def obtener_clima_completo(lat, lon, tipo):
             "rachas": curr['wind_gusts_10m'],
             "dir_v": obtener_flecha_dir(curr['wind_direction_10m']),
             "weather_code": curr['weather_code'],
-            "amanecer": res['daily']['sunrise'][0][-5:], # Extrae "HH:MM"
+            "amanecer": res['daily']['sunrise'][0][-5:],
             "atardecer": res['daily']['sunset'][0][-5:],
             "hourly_times": res['hourly']['time'],
             "hourly_temps": res['hourly']['temperature_2m'],
@@ -96,23 +86,20 @@ def obtener_clima_completo(lat, lon, tipo):
             "hourly_icons": [codigo_clima_a_icono(c) for c in res['hourly']['weather_code']]
         }
         
-        # API Marina (incluye Temperatura del Océano oficial)
         if tipo == "mar":
             url_o = f"https://marine-api.open-meteo.com/v1/marine?latitude={lat}&longitude={lon}&current=wave_height,wave_period,wave_direction,ocean_temperature&timezone=Europe%2FMadrid"
-            res_o = requests.get(url_o, timeout=5).json()['current']
-            
-            # Si el satélite falla en dar el agua, usamos la fórmula antigua de backup
-            agua_api = res_o.get('ocean_temperature')
-            agua_final = agua_api if agua_api is not None else round(12.0 + (now_local.month * 0.8), 1)
-            
-            datos.update({
-                "olas_h": res_o.get('wave_height', 0),
-                "olas_p": res_o.get('wave_period', 0),
-                "olas_dir": obtener_flecha_dir(res_o.get('wave_direction', 0)),
-                "agua": agua_final
-            })
+            res_o = requests.get(url_o, timeout=15).json()
+            if 'current' in res_o:
+                agua_api = res_o['current'].get('ocean_temperature')
+                datos.update({
+                    "olas_h": res_o['current'].get('wave_height', 0),
+                    "olas_p": res_o['current'].get('wave_period', 0),
+                    "olas_dir": obtener_flecha_dir(res_o['current'].get('wave_direction', 0)),
+                    "agua": agua_api if agua_api is not None else round(12.0 + (now_local.month * 0.8), 1)
+                })
         return datos
-    except: return None
+    except Exception as e: 
+        return {"error": str(e)}
 
 # --- API MAREAS ---
 @st.cache_data(ttl=3600)
@@ -120,9 +107,12 @@ def consultar_marea_ihm(id_puerto, fecha_obj):
     if not id_puerto: return None
     url = f"http://ideihm.covam.es/api-ihm/getmarea?request=gettide&id={id_puerto}&format=json&date={fecha_obj.strftime('%Y%m%d')}"
     try:
-        res = requests.get(url, timeout=10, verify=False)
+        res = requests.get(url, timeout=15, verify=False)
         if res.status_code == 200:
             raw = res.json()
+            if 'mareas' not in raw or 'datos' not in raw['mareas']:
+                return {"error": "El servidor del IHM devolvió datos vacíos."}
+                
             marea_data = raw['mareas']['datos']['marea']
             eventos = list(marea_data.values()) if isinstance(marea_data, dict) else marea_data
             pleas, bajas = [], []
@@ -138,19 +128,19 @@ def consultar_marea_ihm(id_puerto, fecha_obj):
             min_b = min([x['a'] for x in bajas]) if bajas else 0
             amplitud = max_p - min_b
             coef_calc = round((amplitud / 3.7) * 90)
-            coef_final = max(20, min(120, coef_calc))
-            return {"p": pleas, "b": bajas, "coef": coef_final}
-    except: return None
+            return {"p": pleas, "b": bajas, "coef": max(20, min(120, coef_calc))}
+        else:
+            return {"error": f"IHM bloqueado (Status {res.status_code})"}
+    except Exception as e: 
+        return {"error": f"Error de red: {str(e)}"}
 
 # --- BARRA DE PROGRESO ---
 def mostrar_progreso_marea(m_datos):
     now_naive = now_local.replace(tzinfo=None)
     events = []
     hoy = datetime.date.today()
-    for m in m_datos['p']:
-        events.append({"t": datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Plea"})
-    for m in m_datos['b']:
-        events.append({"t": datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Baja"})
+    for m in m_datos['p']: events.append({"t": datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Plea"})
+    for m in m_datos['b']: events.append({"t": datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Baja"})
     
     events.sort(key=lambda x: x['t'])
     for i in range(len(events)-1):
@@ -174,10 +164,8 @@ BASES = {
 }
 
 with st.sidebar:
-    try:
-        st.image("logo.png", width=180)
-    except:
-        st.title("⚓ UR Abentura")
+    try: st.image("logo.png", width=180)
+    except: st.title("⚓ UR Abentura")
         
     centro_sel = st.radio("Zentroa:", list(BASES.keys()))
     info = BASES[centro_sel]
@@ -185,9 +173,11 @@ with st.sidebar:
     
     st.divider()
     st.subheader("☀️ Argia / Luz")
-    if clima:
+    if clima and "error" not in clima:
         st.write(f"🌅 **Egunsentia:** {clima['amanecer']}")
         st.write(f"🌇 **Iluntzea:** {clima['atardecer']}")
+    else:
+        st.warning("Ezin izan da eguzki-ordua kargatu.")
     st.divider()
     st.caption("UR line PRO © 2026")
 
@@ -195,33 +185,20 @@ with st.sidebar:
 st.caption(f"📅 **{now_local.strftime('%Y-%m-%d')}** | ⏰ **{now_local.strftime('%H:%M')}**")
 st.title(f"📍 {centro_sel}")
 
-if clima:
+# 1. BLOQUE DE CLIMA (INDEPENDIENTE)
+if clima and "error" not in clima:
     st.markdown(f"### {clima['icono']} {clima['estado']}")
     c1, c2, c3 = st.columns(3)
     c1.metric("Tenperatura", f"{clima['temp']}°C")
     
     if info['tipo'] == "mar":
-        c2.metric("Ura (Boya/Est.)", f"{clima['agua']}°C")
-        c3.metric("Olatua", f"{clima['olas_h']}m", f"Norabidea: {clima['olas_dir']}")
+        c2.metric("Ura (Boya/Est.)", f"{clima.get('agua', '--')}°C")
+        c3.metric("Olatua", f"{clima.get('olas_h', '--')}m", f"Norabidea: {clima.get('olas_dir', '--')}")
         
         cv1, cv2, cv3 = st.columns(3)
         cv1.metric("Haizea", f"{clima['viento']} km/h")
         cv2.metric("Raxak", f"{clima['rachas']} km/h", delta="⚠️" if clima['rachas']>25 else None)
         cv3.metric("Norabidea", clima['dir_v'])
-        
-        st.divider()
-        m_hoy = consultar_marea_ihm(info['id_ihm'], datetime.date.today())
-        if m_hoy:
-            mostrar_progreso_marea(m_hoy)
-            cp, cb = st.columns(2)
-            with cp:
-                st.info("⬆️ **Gora / Pleamar**")
-                for p in m_hoy['p']: st.write(f"• **{p['h']}** ({p['a']}m)")
-            with cb:
-                st.warning("⬇️ **Behera / Bajamar**")
-                for b in m_hoy['b']: st.write(f"• **{b['h']}** ({b['a']}m)")
-            st.write(f"📊 **Koefiziente Kalkulatua:** {m_hoy['coef']}")
-            
     else: # MENDEXA
         c2.metric("Sentsazioa", f"{clima['sensacion']}°C")
         c3.metric("Euria", f"{clima['lluvia']} mm")
@@ -238,33 +215,50 @@ if clima:
         m1.metric("Ekaitz Arriskua", riesgo_t, delta="⚠️ ITXITA" if riesgo_t == "ALTUA" else "IREKITA")
         m2.metric("Max. Haizea", f"{clima['rachas']} km/h", delta="KONTUZ" if clima['rachas'] > 30 else "OK")
 
-    # --- PREVISIÓN POR HORAS (HOURLY) ---
+    # PREVISIÓN 12H
     st.divider()
     with st.expander("⏱️ Datoak orduz ordu / Previsión 12h"):
-        # Buscamos el índice de la hora actual
         hora_actual_str = now_local.strftime("%Y-%m-%dT%H:00")
-        try:
-            idx = clima['hourly_times'].index(hora_actual_str)
-        except ValueError:
-            idx = 0 # Fallback por si la hora no coincide exactamente
+        try: idx = clima['hourly_times'].index(hora_actual_str)
+        except: idx = 0 
             
-        # Creamos una tabla con las próximas 12 horas
-        tiempos = [t[-5:] for t in clima['hourly_times'][idx:idx+12]] # Solo sacamos la hora (HH:MM)
+        tiempos = [t[-5:] for t in clima['hourly_times'][idx:idx+12]]
         iconos = clima['hourly_icons'][idx:idx+12]
         temps = clima['hourly_temps'][idx:idx+12]
         vientos = clima['hourly_wind'][idx:idx+12]
         
         for t, ic, te, vi in zip(tiempos, iconos, temps, vientos):
             st.write(f"**{t}** | {ic} | 🌡️ {te}°C | 💨 {vi} km/h")
+else:
+    st.warning("⚠️ Ezin izan da eguraldia kargatu / No se ha podido cargar la meteorología.")
 
-# --- BUSCADOR DE MAREAS ---
+# 2. BLOQUE DE MAREAS (TOTALMENTE INDEPENDIENTE)
 if info['tipo'] == "mar":
+    st.divider()
+    st.subheader(f"🌊 Gaurko Mareak")
+    m_hoy = consultar_marea_ihm(info['id_ihm'], datetime.date.today())
+    
+    if m_hoy and "error" not in m_hoy:
+        mostrar_progreso_marea(m_hoy)
+        cp, cb = st.columns(2)
+        with cp:
+            st.info("⬆️ **Gora / Pleamar**")
+            for p in m_hoy['p']: st.write(f"• **{p['h']}** ({p['a']}m)")
+        with cb:
+            st.warning("⬇️ **Behera / Bajamar**")
+            for b in m_hoy['b']: st.write(f"• **{b['h']}** ({b['a']}m)")
+        st.write(f"📊 **Koefiziente Kalkulatua:** {m_hoy['coef']}")
+    else:
+        err_msg = m_hoy['error'] if m_hoy else "Error de conexión."
+        st.error(f"⚠️ Arazoa mareak lortzean (IHM): {err_msg}")
+
+    # BUSCADOR
     st.divider()
     with st.expander("🔍 Marea Bilatzailea (Ordu zuzendua)"):
         f_bus = st.date_input("Data:", datetime.date.today())
         if st.button("Ikusi"):
             res = consultar_marea_ihm(info['id_ihm'], f_bus)
-            if res:
+            if res and "error" not in res:
                 r1, r2 = st.columns(2)
                 with r1:
                     st.info("⬆️ **Pleamar**")
@@ -273,6 +267,8 @@ if info['tipo'] == "mar":
                     st.warning("⬇️ **Bajamar**")
                     for b in res['b']: st.write(f"• **{b['h']}** ({b['a']}m)")
                 st.write(f"📊 **Koefizientea:** {res['coef']}")
+            else:
+                st.error("Ezin izan dira datuak lortu.")
 
 st.divider()
 st.caption("UR Abentura PRO © 2026 - Eskerrik asko zure lanagatik! ⚓")
