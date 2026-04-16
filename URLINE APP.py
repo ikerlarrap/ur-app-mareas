@@ -17,18 +17,15 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- LÓGICA DE CORRECCIÓN HORARIA (VERSIÓN ROBUSTA) ---
+# --- LÓGICA DE CORRECCIÓN HORARIA INTELIGENTE ---
 def corregir_hora_exacta(hora_str, fecha_obj):
     """Calcula el desfase (+1 o +2) para cualquier fecha (presente o futura)"""
     try:
         tz = pytz.timezone('Europe/Madrid')
-        # Creamos una fecha al mediodía para evitar problemas de cambio de día al calcular el offset
         dt_consulta = datetime.datetime.combine(fecha_obj, datetime.time(12, 0))
-        # Detectamos el offset oficial de Madrid para esa fecha específica
         offset_segundos = tz.utcoffset(dt_consulta).total_seconds()
         horas_a_sumar = int(offset_segundos / 3600)
         
-        # Sumamos las horas a la hora de la marea
         h_api = datetime.datetime.strptime(hora_str, "%H:%M")
         h_corregida = h_api + datetime.timedelta(hours=horas_a_sumar)
         return h_corregida.strftime("%H:%M")
@@ -96,33 +93,35 @@ def consultar_marea_ihm(id_puerto, fecha_obj):
             pleas, bajas = [], []
             for e in eventos:
                 h_api = e.get('hora', '--:--')[:5]
-                # CORRECCIÓN APLICADA AQUÍ
                 h_corregida = corregir_hora_exacta(h_api, fecha_obj)
                 a = float(e.get('altura', 0))
                 t = (e.get('tipo', '')).lower()
                 if 'pleamar' in t: pleas.append({"h": h_corregida, "a": a})
                 elif 'bajamar' in t: bajas.append({"h": h_corregida, "a": a})
             
+            # --- CÁLCULO DE COEFICIENTE MEJORADO ---
             max_p = max([x['a'] for x in pleas]) if pleas else 0
             min_b = min([x['a'] for x in bajas]) if bajas else 0
-            coef_calc = round(((max_p - min_b) / 4.5) * 100)
-            return {"p": pleas, "b": bajas, "coef": coef_calc}
+            amplitud = max_p - min_b
+            
+            # Ajuste de escala (Base 3.7m para el Cantábrico)
+            coef_calc = round((amplitud / 3.7) * 90)
+            coef_final = max(20, min(120, coef_calc))
+            
+            return {"p": pleas, "b": bajas, "coef": coef_final}
     except: return None
 
 # --- BARRA DE PROGRESO ---
 def mostrar_progreso_marea(m_datos):
     tz = pytz.timezone('Europe/Madrid')
-    # Obtenemos la hora actual EXACTA de Madrid
-    now_local = datetime.datetime.now(tz)
+    now_local = datetime.datetime.now(tz).replace(tzinfo=None)
     
     events = []
     hoy = datetime.date.today()
     for m in m_datos['p']:
-        t_event = tz.localize(datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"))
-        events.append({"t": t_event, "tipo": "Plea"})
+        events.append({"t": datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Plea"})
     for m in m_datos['b']:
-        t_event = tz.localize(datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"))
-        events.append({"t": t_event, "tipo": "Baja"})
+        events.append({"t": datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Baja"})
     
     events.sort(key=lambda x: x['t'])
     
@@ -137,73 +136,4 @@ def mostrar_progreso_marea(m_datos):
             return
     st.caption("Eguneko marea guztiak pasatu dira.")
 
-# --- SIDEBAR ---
-BASES = {
-    "Ur Urdaibai": {"tipo": "mar", "lat": 43.396, "lon": -2.684, "id_ihm": "72"},
-    "Ur Lekeitio": {"tipo": "mar", "lat": 43.364, "lon": -2.503, "id_ihm": "72"},
-    "Mendexa Abentura Park": {"tipo": "monte", "lat": 43.361, "lon": -2.495, "id_ihm": None}
-}
-
-with st.sidebar:
-    st.image("https://www.urdaibai.com/wp-content/uploads/2021/03/logo-ur-abentura.png", width=150)
-    centro_sel = st.radio("Zentroa:", list(BASES.keys()))
-
-info = BASES[centro_sel]
-st.title(f"📍 {centro_sel}")
-clima = obtener_clima_real(info['lat'], info['lon'], info['tipo'])
-
-if clima:
-    st.markdown(f"### {clima['icono']} {clima['estado']}")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Tenperatura", f"{clima['temp']}°C")
-    if info['tipo'] == "mar":
-        c2.metric("Ura (Est.)", f"{clima['agua']}°C")
-        c3.metric("Olatua", f"{clima['olas_h']}m", f"Norabidea: {clima['olas_dir']}")
-        cv1, cv2, cv3 = st.columns(3)
-        cv1.metric("Haizea", f"{clima['viento']} km/h")
-        cv2.metric("Raxak", f"{clima['rachas']} km/h", delta="⚠️" if clima['rachas']>25 else None)
-        cv3.metric("Norabidea", clima['dir_v'])
-        
-        st.divider()
-        m_hoy = consultar_marea_ihm(info['id_ihm'], datetime.date.today())
-        if m_hoy:
-            mostrar_progreso_marea(m_hoy)
-            cp, cb = st.columns(2)
-            with cp:
-                st.info("⬆️ **Gora / Pleamar**")
-                for p in m_hoy['p']: st.write(f"• **{p['h']}** ({p['a']}m)")
-            with cb:
-                st.warning("⬇️ **Behera / Bajamar**")
-                for b in m_hoy['b']: st.write(f"• **{b['h']}** ({b['a']}m)")
-            st.write(f"📊 **Koefiziente Kalkulatua:** {m_hoy['coef']}")
-    else:
-        c2.metric("Sentsazioa", f"{clima['sensacion']}°C")
-        c3.metric("Euria", f"{clima['lluvia']} mm")
-        cv1, cv2, cv3 = st.columns(3)
-        cv1.metric("Haizea", f"{clima['viento']} km/h")
-        cv2.metric("Raxak", f"{clima['rachas']} km/h")
-        cv3.metric("Norabidea", clima['dir_v'])
-        st.divider()
-        st.subheader("🌲 Mendexa Segurtasuna")
-        m1, m2 = st.columns(2)
-        riesgo = "ALTUA" if clima['weather_code'] >= 95 else "Baxua"
-        m1.metric("Ekaitz Arriskua", riesgo, delta="⚠️ ITXITA" if riesgo == "ALTUA" else "OK")
-        m2.metric("Max. Haizea", f"{clima['rachas']} km/h", delta="KONTUZ" if clima['rachas'] > 30 else "OK")
-
-if info['tipo'] == "mar":
-    with st.expander("🔍 Marea Bilatzailea (Ordu zuzendua / Hora corregida)"):
-        f_bus = st.date_input("Data:", datetime.date.today())
-        if st.button("Ikusi"):
-            res = consultar_marea_ihm(info['id_ihm'], f_bus)
-            if res:
-                r1, r2 = st.columns(2)
-                with r1:
-                    st.info("⬆️ **Pleamar**")
-                    for p in res['p']: st.write(f"• **{p['h']}** ({p['a']}m)")
-                with r2:
-                    st.warning("⬇️ **Bajamar**")
-                    for b in res['b']: st.write(f"• **{b['h']}** ({b['a']}m)")
-                st.write(f"📊 **Koefizientea:** {res['coef']}")
-
-st.divider()
-st.caption("UR Abentura PRO © 2026")
+#
