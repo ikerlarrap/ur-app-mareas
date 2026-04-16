@@ -9,11 +9,37 @@ import pytz
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 st.set_page_config(page_title="UR Abentura PRO", layout="wide", page_icon="⚓")
 
-# --- CSS ADAPTATIVO ---
+# --- CSS ADAPTATIVO Y MEJORAS UX MÓVIL ---
 st.markdown("""
     <style>
-    .stMetric { background-color: var(--secondary-background-color); padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+    .stMetric { 
+        background-color: var(--secondary-background-color); 
+        padding: 20px; 
+        border-radius: 12px; 
+        border: 1px solid var(--border-color); 
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05); 
+    }
     .stProgress > div > div > div > div { background-color: #007bff; }
+    
+    /* Aviso visual para móviles indicando dónde está el menú */
+    .mobile-menu-hint {
+        display: none;
+        background-color: #e2f0fb;
+        color: #0056b3;
+        padding: 10px;
+        border-radius: 8px;
+        text-align: center;
+        font-weight: bold;
+        margin-bottom: 15px;
+        border: 1px solid #b8daff;
+    }
+    
+    /* Si la pantalla es pequeña (móvil), mostramos el aviso */
+    @media (max-width: 768px) {
+        .mobile-menu-hint {
+            display: block;
+        }
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -59,7 +85,7 @@ def texto_clima(codigo):
     elif codigo >= 95: return "Ekaitza / Tormenta"
     return "Ezezaguna"
 
-# --- API CLIMA Y OLAS ---
+# --- API CLIMA ---
 @st.cache_data(ttl=900)
 def obtener_clima_completo(lat, lon, tipo):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=temperature_2m,precipitation,wind_speed_10m,weather_code&daily=sunrise,sunset&timezone=Europe%2FMadrid"
@@ -87,7 +113,6 @@ def obtener_clima_completo(lat, lon, tipo):
         }
         
         if tipo == "mar":
-            # API Marina centrada solo en Olas (más robusto)
             try:
                 url_o = f"https://marine-api.open-meteo.com/v1/marine?latitude={lat}&longitude={lon}&current=wave_height,wave_period,wave_direction&timezone=Europe%2FMadrid"
                 res_o = requests.get(url_o, timeout=10).json()
@@ -100,7 +125,6 @@ def obtener_clima_completo(lat, lon, tipo):
             except:
                 datos.update({"olas_h": "--", "olas_p": "--", "olas_dir": ""})
             
-            # Agua siempre estimada para no romper nada
             datos["agua"] = round(12.0 + (now_local.month * 0.8), 1)
 
         return datos
@@ -186,6 +210,9 @@ with st.sidebar:
         st.warning("Ezin izan da eguzki-ordua kargatu.")
     st.divider()
     st.caption("UR line PRO © 2026")
+
+# --- AVISO PARA MÓVILES (HTML INYECTADO) ---
+st.markdown('<div class="mobile-menu-hint">👈 Sakatu goiko ezkerreko botoia zentroa aldatzeko / Toca arriba a la izquierda para cambiar de centro</div>', unsafe_allow_html=True)
 
 # --- CABECERA PRINCIPAL ---
 c_tit, c_fecha = st.columns([2, 1])
