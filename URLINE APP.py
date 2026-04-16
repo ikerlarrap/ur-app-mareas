@@ -59,7 +59,7 @@ def texto_clima(codigo):
     elif codigo >= 95: return "Ekaitza / Tormenta"
     return "Ezezaguna"
 
-# --- API CLIMA ---
+# --- API CLIMA Y OLAS ---
 @st.cache_data(ttl=900)
 def obtener_clima_completo(lat, lon, tipo):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=temperature_2m,precipitation,wind_speed_10m,weather_code&daily=sunrise,sunset&timezone=Europe%2FMadrid"
@@ -87,24 +87,22 @@ def obtener_clima_completo(lat, lon, tipo):
         }
         
         if tipo == "mar":
-            # Intentamos cargar la API Marina, si falla no rompemos el resto
+            # API Marina centrada solo en Olas (más robusto)
             try:
-                url_o = f"https://marine-api.open-meteo.com/v1/marine?latitude={lat}&longitude={lon}&current=wave_height,wave_period,wave_direction,ocean_temperature&timezone=Europe%2FMadrid"
+                url_o = f"https://marine-api.open-meteo.com/v1/marine?latitude={lat}&longitude={lon}&current=wave_height,wave_period,wave_direction&timezone=Europe%2FMadrid"
                 res_o = requests.get(url_o, timeout=10).json()
                 if 'current' in res_o:
-                    agua_api = res_o['current'].get('ocean_temperature')
                     datos.update({
                         "olas_h": res_o['current'].get('wave_height', '--'),
                         "olas_p": res_o['current'].get('wave_period', '--'),
-                        "olas_dir": obtener_flecha_dir(res_o['current'].get('wave_direction', None)),
-                        "agua": agua_api if agua_api is not None else round(12.0 + (now_local.month * 0.8), 1)
+                        "olas_dir": obtener_flecha_dir(res_o['current'].get('wave_direction', None))
                     })
             except:
-                # Valores por defecto si la boya falla
-                datos.update({
-                    "olas_h": "--", "olas_p": "--", "olas_dir": "", 
-                    "agua": round(12.0 + (now_local.month * 0.8), 1)
-                })
+                datos.update({"olas_h": "--", "olas_p": "--", "olas_dir": ""})
+            
+            # Agua siempre estimada para no romper nada
+            datos["agua"] = round(12.0 + (now_local.month * 0.8), 1)
+
         return datos
     except Exception as e: 
         return {"error": str(e)}
@@ -194,7 +192,6 @@ c_tit, c_fecha = st.columns([2, 1])
 with c_tit:
     st.title(f"📍 {centro_sel}")
 with c_fecha:
-    # Fecha y Hora destacadas arriba a la derecha
     st.info(f"📅 **{now_local.strftime('%Y-%m-%d')}** &nbsp;|&nbsp; ⏰ **{now_local.strftime('%H:%M')}**")
 
 # 1. BLOQUE DE CLIMA
@@ -204,8 +201,8 @@ if clima and "error" not in clima:
     c1.metric("Tenperatura", f"{clima['temp']}°C")
     
     if info['tipo'] == "mar":
-        c2.metric("Ura (Boya/Est.)", f"{clima.get('agua', '--')}°C")
-        c3.metric("Olatua", f"{clima.get('olas_h', '--')}m", f"Norabidea: {clima.get('olas_dir', '--')}")
+        c2.metric("Ura (Est.)", f"{clima.get('agua', '--')}°C")
+        c3.metric("Olatua", f"{clima.get('olas_h', '--')}m", f"{clima.get('olas_p','--')}s | {clima.get('olas_dir', '')}")
         
         cv1, cv2, cv3 = st.columns(3)
         cv1.metric("Haizea", f"{clima['viento']} km/h")
@@ -232,7 +229,6 @@ if clima and "error" not in clima:
     with st.expander("⏱️ Datoak orduz ordu / Previsión 12h"):
         hora_actual_str = now_local.strftime("%Y-%m-%dT%H:00")
         
-        # Filtramos para encontrar la hora actual o la siguiente
         idx = 0
         for i, ht in enumerate(clima['hourly_times']):
             if ht >= hora_actual_str:
