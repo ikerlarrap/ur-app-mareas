@@ -17,15 +17,21 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- LÓGICA DE CORRECCIÓN HORARIA INTELIGENTE ---
+# --- LÓGICA DE CORRECCIÓN HORARIA (VERSIÓN ROBUSTA) ---
 def corregir_hora_exacta(hora_str, fecha_obj):
-    """Detecta automáticamente si la fecha buscada es horario de verano (+2) o invierno (+1)"""
+    """Calcula el desfase (+1 o +2) para cualquier fecha (presente o futura)"""
     try:
         tz = pytz.timezone('Europe/Madrid')
-        h_api = datetime.datetime.strptime(hora_str, "%H:%M").time()
-        dt_ingenuo = datetime.datetime.combine(fecha_obj, h_api)
-        dt_localizado = tz.localize(dt_ingenuo)
-        return dt_localizado.strftime("%H:%M")
+        # Creamos una fecha al mediodía para evitar problemas de cambio de día al calcular el offset
+        dt_consulta = datetime.datetime.combine(fecha_obj, datetime.time(12, 0))
+        # Detectamos el offset oficial de Madrid para esa fecha específica
+        offset_segundos = tz.utcoffset(dt_consulta).total_seconds()
+        horas_a_sumar = int(offset_segundos / 3600)
+        
+        # Sumamos las horas a la hora de la marea
+        h_api = datetime.datetime.strptime(hora_str, "%H:%M")
+        h_corregida = h_api + datetime.timedelta(hours=horas_a_sumar)
+        return h_corregida.strftime("%H:%M")
     except:
         return hora_str
 
@@ -76,7 +82,7 @@ def obtener_clima_real(lat, lon, tipo):
         return datos
     except: return None
 
-# --- API MAREAS CON DST AUTOMÁTICO ---
+# --- API MAREAS ---
 @st.cache_data(ttl=3600)
 def consultar_marea_ihm(id_puerto, fecha_obj):
     if not id_puerto: return None
@@ -90,7 +96,7 @@ def consultar_marea_ihm(id_puerto, fecha_obj):
             pleas, bajas = [], []
             for e in eventos:
                 h_api = e.get('hora', '--:--')[:5]
-                # AQUÍ SE APLICA LA MAGIA DEL CAMBIO DE HORA SEGÚN LA FECHA
+                # CORRECCIÓN APLICADA AQUÍ
                 h_corregida = corregir_hora_exacta(h_api, fecha_obj)
                 a = float(e.get('altura', 0))
                 t = (e.get('tipo', '')).lower()
@@ -103,20 +109,27 @@ def consultar_marea_ihm(id_puerto, fecha_obj):
             return {"p": pleas, "b": bajas, "coef": coef_calc}
     except: return None
 
-# --- BARRA DE PROGRESO CORREGIDA ---
+# --- BARRA DE PROGRESO ---
 def mostrar_progreso_marea(m_datos):
     tz = pytz.timezone('Europe/Madrid')
-    now = datetime.datetime.now(tz).replace(tzinfo=None)
+    # Obtenemos la hora actual EXACTA de Madrid
+    now_local = datetime.datetime.now(tz)
+    
     events = []
     hoy = datetime.date.today()
-    for m in m_datos['p']: events.append({"t": datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Plea"})
-    for m in m_datos['b']: events.append({"t": datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"), "tipo": "Baja"})
+    for m in m_datos['p']:
+        t_event = tz.localize(datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"))
+        events.append({"t": t_event, "tipo": "Plea"})
+    for m in m_datos['b']:
+        t_event = tz.localize(datetime.datetime.strptime(f"{hoy} {m['h']}", "%Y-%m-%d %H:%M"))
+        events.append({"t": t_event, "tipo": "Baja"})
+    
     events.sort(key=lambda x: x['t'])
     
     for i in range(len(events)-1):
-        if events[i]['t'] <= now <= events[i+1]['t']:
-            progreso = (now - events[i]['t']).total_seconds() / (events[i+1]['t'] - events[i]['t']).total_seconds()
-            mins = int((events[i+1]['t'] - now).total_seconds() / 60)
+        if events[i]['t'] <= now_local <= events[i+1]['t']:
+            progreso = (now_local - events[i]['t']).total_seconds() / (events[i+1]['t'] - events[i]['t']).total_seconds()
+            mins = int((events[i+1]['t'] - now_local).total_seconds() / 60)
             estado = "IGOTZEN (Subiendo) ⬆️" if events[i+1]['tipo'] == "Plea" else "JAISTEN (Bajando) ⬇️"
             st.write(f"⏳ **Marea egoera:** {estado}")
             st.progress(progreso)
